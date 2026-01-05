@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, VoiceConnectionStatus } = require('@discordjs/voice');
-const ytdl = require('ytdl-core');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
+const play = require('play-dl');
 const express = require('express');
 
 // Express sunucusu oluştur (Koyeb için gerekli)
@@ -59,19 +59,18 @@ client.on('messageCreate', async message => {
         const url = args[0];
         
         // YouTube URL kontrolü
-        if (!ytdl.validateURL(url)) {
+        if (!play.yt_validate(url)) {
             return message.reply('❌ Geçerli bir YouTube linki değil!');
         }
 
         message.reply('🔍 Şarkı bilgileri alınıyor...').then(async msg => {
             try {
                 const serverQueue = queue.get(message.guild.id);
-                const songInfo = await ytdl.getInfo(url);
+                const info = await play.video_info(url);
                 const song = {
-                    title: songInfo.videoDetails.title,
-                    url: songInfo.videoDetails.video_url,
-                    duration: songInfo.videoDetails.lengthSeconds,
-                    thumbnail: songInfo.videoDetails.thumbnails[0].url
+                    title: info.video_details.title,
+                    url: info.video_details.url,
+                    duration: info.video_details.durationInSec,
                 };
 
                 if (!serverQueue) {
@@ -110,7 +109,7 @@ client.on('messageCreate', async message => {
                 }
             } catch (error) {
                 console.error(error);
-                msg.edit('❌ Şarkı bilgileri alınırken hata oluştu!');
+                msg.edit('❌ Şarkı bilgileri alınırken hata oluştu! Video yaş kısıtlamalı veya erişilebilir olmayabilir.');
             }
         });
     }
@@ -183,7 +182,7 @@ client.on('messageCreate', async message => {
     }
 });
 
-function playSong(guild, song) {
+async function playSong(guild, song) {
     const serverQueue = queue.get(guild.id);
     if (!song) {
         serverQueue.connection.destroy();
@@ -191,25 +190,29 @@ function playSong(guild, song) {
         return;
     }
 
-    const stream = ytdl(song.url, { 
-        filter: 'audioonly',
-        quality: 'highestaudio',
-        highWaterMark: 1 << 25
-    });
+    try {
+        const stream = await play.stream(song.url);
+        const resource = createAudioResource(stream.stream, {
+            inputType: stream.type
+        });
+        
+        serverQueue.player.play(resource);
 
-    const resource = createAudioResource(stream);
-    serverQueue.player.play(resource);
+        serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+            serverQueue.songs.shift();
+            playSong(guild, serverQueue.songs[0]);
+        });
 
-    serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+        serverQueue.player.on('error', error => {
+            console.error('❌ Çalma hatası:', error);
+            serverQueue.songs.shift();
+            playSong(guild, serverQueue.songs[0]);
+        });
+    } catch (error) {
+        console.error('❌ Stream hatası:', error);
         serverQueue.songs.shift();
         playSong(guild, serverQueue.songs[0]);
-    });
-
-    serverQueue.player.on('error', error => {
-        console.error('❌ Çalma hatası:', error);
-        serverQueue.songs.shift();
-        playSong(guild, serverQueue.songs[0]);
-    });
+    }
 }
 
 // Environment variable'dan token al

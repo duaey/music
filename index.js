@@ -35,6 +35,20 @@ const client = new Client({
 
 const queue = new Map();
 
+// play-dl initialize et
+(async () => {
+    try {
+        await play.setToken({
+            youtube: {
+                cookie: process.env.YOUTUBE_COOKIE || undefined
+            }
+        });
+        console.log('✅ play-dl hazır');
+    } catch (error) {
+        console.log('⚠️ play-dl cookie yok, devam ediliyor...');
+    }
+})();
+
 client.once('ready', () => {
     console.log(`✅ Bot hazır! ${client.user.tag} olarak giriş yapıldı`);
     console.log(`📊 ${client.guilds.cache.size} sunucuda aktif`);
@@ -66,7 +80,16 @@ client.on('messageCreate', async message => {
         message.reply('🔍 Şarkı bilgileri alınıyor...').then(async msg => {
             try {
                 const serverQueue = queue.get(message.guild.id);
-                const info = await play.video_info(url);
+                
+                // play-dl ile video bilgisi al
+                let info;
+                try {
+                    info = await play.video_info(url);
+                } catch (err) {
+                    console.error('Video info hatası:', err);
+                    return msg.edit('❌ Video bilgisi alınamadı. Lütfen başka bir video deneyin.');
+                }
+
                 const song = {
                     title: info.video_details.title,
                     url: info.video_details.url,
@@ -185,33 +208,56 @@ client.on('messageCreate', async message => {
 async function playSong(guild, song) {
     const serverQueue = queue.get(guild.id);
     if (!song) {
-        serverQueue.connection.destroy();
-        queue.delete(guild.id);
+        setTimeout(() => {
+            if (serverQueue.connection) {
+                serverQueue.connection.destroy();
+            }
+            queue.delete(guild.id);
+        }, 1000);
         return;
     }
 
     try {
+        console.log(`🎵 Çalınıyor: ${song.title}`);
+        
+        // play-dl ile stream oluştur
         const stream = await play.stream(song.url);
+        
         const resource = createAudioResource(stream.stream, {
-            inputType: stream.type
+            inputType: stream.type,
+            inlineVolume: true
         });
         
         serverQueue.player.play(resource);
 
-        serverQueue.player.on(AudioPlayerStatus.Idle, () => {
+        serverQueue.player.once(AudioPlayerStatus.Idle, () => {
+            console.log('⏭️ Şarkı bitti, sıradaki çalınıyor...');
             serverQueue.songs.shift();
             playSong(guild, serverQueue.songs[0]);
         });
 
         serverQueue.player.on('error', error => {
-            console.error('❌ Çalma hatası:', error);
+            console.error('❌ Player hatası:', error);
             serverQueue.songs.shift();
             playSong(guild, serverQueue.songs[0]);
         });
     } catch (error) {
         console.error('❌ Stream hatası:', error);
+        console.error('Hata detayı:', error.message);
         serverQueue.songs.shift();
-        playSong(guild, serverQueue.songs[0]);
+        
+        // Eğer kuyrukta başka şarkı varsa devam et
+        if (serverQueue.songs.length > 0) {
+            playSong(guild, serverQueue.songs[0]);
+        } else {
+            // Kuyruk boşsa kanaldan ayrıl
+            setTimeout(() => {
+                if (serverQueue.connection) {
+                    serverQueue.connection.destroy();
+                }
+                queue.delete(guild.id);
+            }, 1000);
+        }
     }
 }
 

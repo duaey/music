@@ -1,6 +1,6 @@
 const { Client, GatewayIntentBits } = require('discord.js');
 const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus, StreamType } = require('@discordjs/voice');
-const play = require('play-dl');
+const ytdl = require('@distube/ytdl-core');
 const express = require('express');
 
 // Express sunucusu oluştur (Koyeb için gerekli)
@@ -35,20 +35,6 @@ const client = new Client({
 
 const queue = new Map();
 
-// play-dl initialize et
-(async () => {
-    try {
-        await play.setToken({
-            youtube: {
-                cookie: process.env.YOUTUBE_COOKIE || undefined
-            }
-        });
-        console.log('✅ play-dl hazır');
-    } catch (error) {
-        console.log('⚠️ play-dl cookie yok, devam ediliyor...');
-    }
-})();
-
 client.once('ready', () => {
     console.log(`✅ Bot hazır! ${client.user.tag} olarak giriş yapıldı`);
     console.log(`📊 ${client.guilds.cache.size} sunucuda aktif`);
@@ -73,7 +59,7 @@ client.on('messageCreate', async message => {
         const url = args[0];
         
         // YouTube URL kontrolü
-        if (!play.yt_validate(url)) {
+        if (!ytdl.validateURL(url)) {
             return message.reply('❌ Geçerli bir YouTube linki değil!');
         }
 
@@ -81,19 +67,19 @@ client.on('messageCreate', async message => {
             try {
                 const serverQueue = queue.get(message.guild.id);
                 
-                // play-dl ile video bilgisi al
+                // ytdl ile video bilgisi al
                 let info;
                 try {
-                    info = await play.video_info(url);
+                    info = await ytdl.getInfo(url);
                 } catch (err) {
                     console.error('Video info hatası:', err);
-                    return msg.edit('❌ Video bilgisi alınamadı. Lütfen başka bir video deneyin.');
+                    return msg.edit('❌ Video bilgisi alınamadı. Video özel veya kısıtlı olabilir.');
                 }
 
                 const song = {
-                    title: info.video_details.title,
-                    url: info.video_details.url,
-                    duration: info.video_details.durationInSec,
+                    title: info.videoDetails.title,
+                    url: info.videoDetails.video_url,
+                    duration: info.videoDetails.lengthSeconds,
                 };
 
                 if (!serverQueue) {
@@ -220,11 +206,16 @@ async function playSong(guild, song) {
     try {
         console.log(`🎵 Çalınıyor: ${song.title}`);
         
-        // play-dl ile stream oluştur
-        const stream = await play.stream(song.url);
+        // ytdl stream oluştur
+        const stream = ytdl(song.url, {
+            filter: 'audioonly',
+            quality: 'highestaudio',
+            highWaterMark: 1 << 25,
+            dlChunkSize: 0
+        });
         
-        const resource = createAudioResource(stream.stream, {
-            inputType: stream.type,
+        const resource = createAudioResource(stream, {
+            inputType: StreamType.Arbitrary,
             inlineVolume: true
         });
         
@@ -241,8 +232,14 @@ async function playSong(guild, song) {
             serverQueue.songs.shift();
             playSong(guild, serverQueue.songs[0]);
         });
+        
+        stream.on('error', error => {
+            console.error('❌ Stream hatası:', error);
+            serverQueue.songs.shift();
+            playSong(guild, serverQueue.songs[0]);
+        });
     } catch (error) {
-        console.error('❌ Stream hatası:', error);
+        console.error('❌ Çalma hatası:', error);
         console.error('Hata detayı:', error.message);
         serverQueue.songs.shift();
         
